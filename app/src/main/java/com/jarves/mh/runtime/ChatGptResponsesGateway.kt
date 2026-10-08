@@ -259,7 +259,7 @@ internal class ChatGptResponsesAdapter(private val model: String) {
                         reasoningByCall[id].orEmpty().forEach { reasoning ->
                             if (includedReasoning.add(reasoning.getString("id"))) input.put(JSONObject(reasoning.toString()))
                         }
-                        input.put(JSONObject().put("type", "function_call").put("call_id", id)
+                        input.put(JSONObject().put("type", "function_call").put("call_id", id).put("namespace", TOOL_NAMESPACE)
                             .put("name", part.getString("name")).put("arguments", part.getJSONObject("input").toString()))
                     }
                     "tool_result" -> input.put(JSONObject().put("type", "function_call_output")
@@ -275,22 +275,30 @@ internal class ChatGptResponsesAdapter(private val model: String) {
         val instructions = valueText(source.opt("system"))
         if (instructions.isNotBlank()) target.put("instructions", instructions)
         source.optJSONArray("tools")?.takeIf { it.length() > 0 }?.let { tools ->
+            val choice = source.optJSONObject("tool_choice")
+            val forcedName = if (choice?.optString("type") == "tool") choice.getString("name") else null
             val functions = JSONArray()
+            val names = mutableSetOf<String>()
             for (index in 0 until tools.length()) {
                 val tool = tools.getJSONObject(index)
                 val name = tool.optString("name")
                 require(name.isNotBlank()) { "Unsupported unnamed tool" }
+                require(names.add(name)) { "Duplicate tool name: $name" }
+                if (forcedName != null && name != forcedName) continue
                 functions.put(JSONObject().put("type", "function").put("name", name)
                     .put("description", tool.optString("description"))
                     .put("parameters", tool.optJSONObject("input_schema") ?: JSONObject().put("type", "object"))
                     .put("strict", false))
             }
-            target.put("tools", functions)
-            val choice = source.optJSONObject("tool_choice")
+            require(functions.length() > 0) { "The requested tool is not available" }
+            // ChatGPT plan usage accepts function tools only inside namespaces (or additional_tools input items).
+            target.put("tools", JSONArray().put(JSONObject().put("type", "namespace").put("name", TOOL_NAMESPACE)
+                .put("description", "Tools provided by Mobile Harness for working on the user's project.")
+                .put("tools", functions)))
             target.put("tool_choice", when (choice?.optString("type")) {
-                "any" -> "required"
+                // A single permitted function preserves Anthropic's forced-tool choice without a namespace-ambiguous name.
+                "any", "tool" -> "required"
                 "none" -> "none"
-                "tool" -> JSONObject().put("type", "function").put("name", choice.getString("name"))
                 else -> "auto"
             })
         }
@@ -328,6 +336,7 @@ internal class ChatGptResponsesAdapter(private val model: String) {
                 "function_call" -> {
                     val id = item.getString("call_id")
                     require(id.isNotBlank() && item.optString("name").isNotBlank()) { "ChatGPT returned an invalid tool call" }
+                    require(item.optString("namespace") == TOOL_NAMESPACE) { "ChatGPT returned a tool from an unexpected namespace; the tool was not run" }
                     val arguments = try {
                         JSONObject(item.getString("arguments"))
                     } catch (_: Exception) {
@@ -382,6 +391,10 @@ internal class ChatGptResponsesAdapter(private val model: String) {
         }
         null, JSONObject.NULL -> ""
         else -> error("ChatGPT received an unsupported tool result")
+    }
+
+    private companion object {
+        const val TOOL_NAMESPACE = "mobile_harness"
     }
 }
 

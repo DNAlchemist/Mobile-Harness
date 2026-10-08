@@ -36,6 +36,26 @@ class ChatGptOAuthTest {
         assertEquals("Mobile Harness Fork", parameters["agent_name_hint"])
         assertEquals("S256", parameters["code_challenge_method"])
         assertFalse(parameters.containsKey("client_secret"))
+        assertFalse(parameters.containsKey("prompt"))
+    }
+
+    @Test fun explicitRetryOfIdentityOnlyConnectionRequestsConsentWithoutChangingNormalReturningSignIn() {
+        val returning = OAuthAttempt(attempt.redirectUri, "oaiapp_issued")
+        fun parameters(scopes: Set<String>, signedOut: Boolean = false): Map<String, String> {
+            val tokens = if (signedOut) null else ChatGptTokens("access", "refresh", "retained-id", scopes, Long.MAX_VALUE)
+            val account = ChatGptAccount("oaiapp_issued", "subject", "test@example.invalid", tokens)
+            return URI(ChatGptOAuth.authorizationUrl(returning, "urn:uuid:host", account)).rawQuery.split('&').associate {
+                val pair = it.split('=', limit = 2)
+                URLDecoder.decode(pair[0], "UTF-8") to URLDecoder.decode(pair[1], "UTF-8")
+            }
+        }
+        val retry = parameters(setOf("openid", "email"))
+        assertEquals("consent", retry["prompt"])
+        assertEquals(ChatGptOAuth.SCOPES, retry["scope"])
+        assertEquals("oaiapp_issued", retry["client_id"])
+        assertFalse(retry.containsKey("force_reconsent"))
+        assertFalse(parameters(setOf("openid", ChatGptOAuth.PLAN_SCOPE)).containsKey("prompt"))
+        assertFalse(parameters(emptySet(), signedOut = true).containsKey("prompt"))
     }
 
     @Test fun callbackRequiresMatchingStateAndIssuedClient() {

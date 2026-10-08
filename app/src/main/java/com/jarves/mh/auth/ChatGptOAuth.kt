@@ -55,6 +55,9 @@ internal object ChatGptOAuth {
         if (attempt.clientId == DYNAMIC_CLIENT) parameters["agent_name_hint"] = "Mobile Harness Fork"
         account?.tokens?.idToken?.let { parameters["id_token_hint"] = it }
         account?.email?.takeIf(String::isNotBlank)?.let { parameters["login_hint"] = it }
+        // The user explicitly retried an identity-only connection to enable plan usage.
+        // Ordinary returning sign-ins retain their normal, consent-free behavior.
+        if (account?.tokens?.let { PLAN_SCOPE !in it.scopes } == true) parameters["prompt"] = "consent"
         // Never log this URL: a returning account may supply an ID-token hint.
         return "$AUTHORIZE?${form(parameters)}"
     }

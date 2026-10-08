@@ -88,6 +88,39 @@ class ChatGptSessionTest {
         assertFalse(controller.state.value.connected)
     }
 
+    @Test fun everyDocumentedUnusableRefreshErrorClearsTokensAndPreservesHostAndAccountMapping() = runBlocking {
+        for (code in listOf("invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
+            "refresh_token_invalidated", "refresh_token_reused")) {
+            val before = session(expiresAt = time - 1)
+            val store = MemoryStore(before)
+            val controller = ChatGptAuthController(store, AuthHttpClient { _, _, _ ->
+                AuthHttpResponse(400, """{"error":"$code"}""")
+            }, { time })
+            try { controller.validAccessToken(); fail("Expected rejection for $code") } catch (_: ChatGptAuthException) { }
+            assertNull("$code must clear unusable credentials", store.value.activeAccount()?.tokens)
+            assertEquals(before.hostId, store.value.hostId)
+            assertEquals("issued-client", store.value.activeClientId)
+            assertEquals("subject-a", store.value.activeAccount()?.subject)
+            assertEquals("test@example.invalid", store.value.activeAccount()?.email)
+            assertFalse(controller.state.value.connected)
+            assertTrue(controller.state.value.models.isEmpty())
+        }
+    }
+
+    @Test fun temporaryRefreshFailureAndInvalidClientKeepCredentialsForRecovery() = runBlocking {
+        for ((status, code) in listOf(503 to "temporarily_unavailable", 400 to "invalid_client")) {
+            val before = session(expiresAt = time - 1)
+            val store = MemoryStore(before)
+            val controller = ChatGptAuthController(store, AuthHttpClient { _, _, _ ->
+                AuthHttpResponse(status, """{"error":"$code"}""")
+            }, { time })
+            try { controller.validAccessToken(); fail("Expected rejection for $code") } catch (_: ChatGptAuthException) { }
+            assertNotNull(store.value.activeAccount()?.tokens)
+            assertEquals("old-refresh", store.value.activeAccount()?.tokens?.refreshToken)
+            assertEquals(0, store.writes)
+        }
+    }
+
     @Test fun signoutRevokesRenewableSessionAndWipesAllTokens() = runBlocking {
         val before = session()
         val store = MemoryStore(before)

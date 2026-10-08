@@ -26,12 +26,15 @@ class ChatGptResponsesGatewayTest {
     }
 
     @Test
-    fun requestUsesOnlySupportedResponsesFieldsAndFlatFunctionTools() {
+    fun requestUsesOnlySupportedResponsesFieldsAndForcesOnlyTheChosenNamespacedFunction() {
         val request = ChatGptResponsesAdapter("account-model").request(JSONObject("""{
             "model":"claude-sonnet-4-6", "max_tokens":16000, "temperature":0.8,
             "metadata":{"user_id":"claude-internal"}, "system":[{"type":"text","text":"Build carefully"}],
             "messages":[{"role":"user","content":"Inspect the project"}],
-            "tools":[{"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}}],
+            "tools":[
+                {"name":"read_file","description":"Read a file","input_schema":{"type":"object","properties":{"path":{"type":"string"}}}},
+                {"name":"write_file","description":"Write a file","input_schema":{"type":"object"}}
+            ],
             "tool_choice":{"type":"tool","name":"read_file"}
         }"""))
 
@@ -41,11 +44,32 @@ class ChatGptResponsesGatewayTest {
         assertTrue(request.getBoolean("stream"))
         assertEquals("reasoning.encrypted_content", request.getJSONArray("include").getString(0))
         assertEquals(setOf("model", "input", "instructions", "store", "stream", "include", "tools", "tool_choice"), request.keys().asSequence().toSet())
-        val tool = request.getJSONArray("tools").getJSONObject(0)
+        val namespace = request.getJSONArray("tools").getJSONObject(0)
+        assertEquals(1, request.getJSONArray("tools").length())
+        assertEquals("namespace", namespace.getString("type"))
+        assertEquals("mobile_harness", namespace.getString("name"))
+        assertTrue(namespace.getString("description").isNotBlank())
+        assertEquals(1, namespace.getJSONArray("tools").length())
+        val tool = namespace.getJSONArray("tools").getJSONObject(0)
         assertEquals("read_file", tool.getString("name"))
         assertFalse(tool.getBoolean("strict"))
         assertFalse(tool.has("function"))
-        assertEquals("read_file", request.getJSONObject("tool_choice").getString("name"))
+        assertEquals("required", request.getString("tool_choice"))
+    }
+
+    @Test
+    fun automaticToolChoiceMakesAllFunctionsImmediatelyAvailableInTheNamespace() {
+        val request = ChatGptResponsesAdapter("model").request(JSONObject("""{
+            "messages":[{"role":"user","content":"Inspect"}],
+            "tools":[{"name":"read_file","input_schema":{"type":"object"}},{"name":"list_files","input_schema":{"type":"object"}}]
+        }"""))
+        val tools = request.getJSONArray("tools").getJSONObject(0).getJSONArray("tools")
+        assertEquals(2, tools.length())
+        assertEquals("read_file", tools.getJSONObject(0).getString("name"))
+        assertEquals("list_files", tools.getJSONObject(1).getString("name"))
+        assertEquals("function", tools.getJSONObject(0).getString("type"))
+        assertFalse(tools.getJSONObject(0).has("defer_loading"))
+        assertEquals("auto", request.getString("tool_choice"))
     }
 
     @Test
@@ -55,12 +79,14 @@ class ChatGptResponsesGatewayTest {
             "id":"resp_1","status":"completed","usage":{"input_tokens":12,"output_tokens":20},
             "output":[
                 {"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque-reasoning"},
-                {"type":"function_call","id":"fc_1","call_id":"call_read","name":"read_file","arguments":"{\"path\":\"app.kt\"}"},
-                {"type":"function_call","id":"fc_2","call_id":"call_list","name":"list_files","arguments":"{}"}
+                {"type":"function_call","id":"fc_1","call_id":"call_read","namespace":"mobile_harness","name":"read_file","arguments":"{\"path\":\"app.kt\"}"},
+                {"type":"function_call","id":"fc_2","call_id":"call_list","namespace":"mobile_harness","name":"list_files","arguments":"{}"}
             ]
         }"""), "claude-sonnet-4-6")
         assertEquals("tool_use", reply.getString("stop_reason"))
         assertEquals("call_read", reply.getJSONArray("content").getJSONObject(0).getString("id"))
+        assertEquals("read_file", reply.getJSONArray("content").getJSONObject(0).getString("name"))
+        assertFalse(reply.getJSONArray("content").getJSONObject(0).has("namespace"))
         assertEquals("app.kt", reply.getJSONArray("content").getJSONObject(0).getJSONObject("input").getString("path"))
         val messages = JSONArray()
             .put(JSONObject().put("role", "user").put("content", "Inspect"))
@@ -74,7 +100,10 @@ class ChatGptResponsesGatewayTest {
         assertEquals("rs_1", next.getJSONObject(1).getString("id"))
         assertEquals("opaque-reasoning", next.getJSONObject(1).getString("encrypted_content"))
         assertEquals("call_read", next.getJSONObject(2).getString("call_id"))
+        assertEquals("mobile_harness", next.getJSONObject(2).getString("namespace"))
+        assertEquals("read_file", next.getJSONObject(2).getString("name"))
         assertEquals("call_list", next.getJSONObject(3).getString("call_id"))
+        assertEquals("mobile_harness", next.getJSONObject(3).getString("namespace"))
         assertEquals("function_call_output", next.getJSONObject(4).getString("type"))
         assertEquals("file text", next.getJSONObject(4).getString("output"))
         assertEquals("Tool error: permission denied", next.getJSONObject(5).getString("output"))
@@ -86,7 +115,7 @@ class ChatGptResponsesGatewayTest {
         fun toolReply(id: String, reasoningId: String) = adapter.message(JSONObject().put("status", "completed")
             .put("output", JSONArray()
                 .put(JSONObject().put("type", "reasoning").put("id", reasoningId).put("summary", JSONArray()).put("encrypted_content", "encrypted-$reasoningId"))
-                .put(JSONObject().put("type", "function_call").put("call_id", id).put("name", "read_file").put("arguments", "{}"))), "model")
+                .put(JSONObject().put("type", "function_call").put("call_id", id).put("namespace", "mobile_harness").put("name", "read_file").put("arguments", "{}"))), "model")
         val first = toolReply("call_one", "rs_one")
         val second = toolReply("call_two", "rs_two")
         val history = JSONArray().put(JSONObject().put("role", "user").put("content", "Inspect"))
@@ -121,7 +150,16 @@ class ChatGptResponsesGatewayTest {
     fun invalidToolArgumentsFailWithoutExecutingAnEmptyTool() {
         expectFailure("invalid tool arguments") {
             ChatGptResponsesAdapter("model").message(JSONObject("""{
-                "status":"completed","output":[{"type":"function_call","call_id":"call_1","name":"delete_file","arguments":"broken-json"}]
+                "status":"completed","output":[{"type":"function_call","call_id":"call_1","namespace":"mobile_harness","name":"delete_file","arguments":"broken-json"}]
+            }"""), "model")
+        }
+    }
+
+    @Test
+    fun unexpectedToolNamespaceFailsBeforePassingTheCallToClaude() {
+        expectFailure("unexpected namespace") {
+            ChatGptResponsesAdapter("model").message(JSONObject("""{
+                "status":"completed","output":[{"type":"function_call","call_id":"call_1","namespace":"other_application","name":"read_file","arguments":"{}"}]
             }"""), "model")
         }
     }

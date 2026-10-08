@@ -162,7 +162,7 @@ class ChatGptAuthController internal constructor(
             "grant_type" to "refresh_token", "client_id" to account.clientId,
             "refresh_token" to refresh, "resource" to ChatGptOAuth.RESOURCE,
         ), null)
-        if (response.status !in 200..299 && oauthError(response) == "invalid_grant") {
+        if (response.status !in 200..299 && oauthError(response) in UNUSABLE_REFRESH_ERRORS) {
             save(loaded.replace(account.withoutTokens()))
             publish(error = "The ChatGPT session expired or was revoked. Continue with ChatGPT again.")
             throw ChatGptAuthException("The ChatGPT session expired or was revoked. Continue with ChatGPT again.")
@@ -301,8 +301,21 @@ class ChatGptAuthController internal constructor(
         return ChatGptTokens(access, refresh, idToken!!, scopes, now() + expiresIn * 1000L, earliest * 1000L)
     }
 
-    private fun oauthError(response: AuthHttpResponse): String? = runCatching { JSONObject(response.body).optionalString("error") }.getOrNull()
+    private fun oauthError(response: AuthHttpResponse): String? = runCatching {
+        when (val error = JSONObject(response.body).opt("error")) {
+            is String -> error
+            is JSONObject -> error.optionalString("code") ?: error.optionalString("type")
+            else -> null
+        }
+    }.getOrNull()
 
     private fun friendly(failure: Exception): String = if (failure is ChatGptAuthException) failure.message.orEmpty()
         else "Could not connect to ChatGPT. Check your connection and try again."
+
+    private companion object {
+        val UNUSABLE_REFRESH_ERRORS = setOf(
+            "invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired",
+            "refresh_token_invalidated", "refresh_token_reused",
+        )
+    }
 }
