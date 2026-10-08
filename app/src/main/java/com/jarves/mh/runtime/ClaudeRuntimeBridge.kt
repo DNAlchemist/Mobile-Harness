@@ -65,6 +65,7 @@ internal object ProviderRuntimeErrorDetector {
 
 class ClaudeRuntimeBridge(
     private val context: Context,
+    private val chatGptAccessToken: (suspend () -> String)? = null,
     private val secretFor: (ProviderProfile) -> String?,
 ) : RuntimeBridge {
     private val installer = RuntimeInstaller(context)
@@ -107,8 +108,13 @@ class ClaudeRuntimeBridge(
         streamedThinking.clear()
         eventBus.emit(RuntimeEvent.SessionStarted(sessionId))
         pushForegroundProgress("Starting Claude Code…")
-        val secret = secretFor(provider).orEmpty()
-        if (secret.isBlank()) {
+        val chatGpt = provider.kind == ProviderKind.CHATGPT
+        val secret = if (chatGpt) "" else secretFor(provider).orEmpty()
+        if (chatGpt && chatGptAccessToken == null) {
+            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, "Sign in with ChatGPT before starting a task."))
+            return@withContext sessionId
+        }
+        if (!chatGpt && secret.isBlank()) {
             val message = if (provider.kind == ProviderKind.CLAUDE) {
                 "No Claude subscription token is saved. Add one from Agent → AI provider."
             } else {
@@ -120,6 +126,8 @@ class ClaudeRuntimeBridge(
 
         var formatGateway: LocalFormatGateway? = null
         var openRouterGateway: OpenRouterRoutingGateway? = null
+        var chatGptGateway: ChatGptResponsesGateway? = null
+        try {
         runCatching {
             RuntimeTaskController.stopAction = {
                 userStopRequested = true
@@ -141,7 +149,8 @@ class ClaudeRuntimeBridge(
             val workspace = ensureWorkspace(projectId)
             createCheckpoint(projectId, workspace)
             val before = snapshot(workspace)
-            formatGateway = if (provider.kind.protocol in setOf(
+            chatGptGateway = if (chatGpt) ChatGptResponsesGateway(provider, checkNotNull(chatGptAccessToken)).start() else null
+            formatGateway = if (!chatGpt && provider.kind.protocol in setOf(
                     com.jarves.mh.model.ProviderProtocol.OPENAI_CHAT,
                     com.jarves.mh.model.ProviderProtocol.OPENAI_RESPONSES,
                 )) LocalFormatGateway(provider, secret).start() else null
@@ -150,8 +159,8 @@ class ClaudeRuntimeBridge(
             ) OpenRouterRoutingGateway(provider, secret).start() else null
             val launch = RuntimeLaunchConfigBuilder.build(
                 provider,
-                authToken = secret,
-                localGatewayUrl = formatGateway?.url ?: openRouterGateway?.url,
+                authToken = chatGptGateway?.authorizationToken ?: secret,
+                localGatewayUrl = chatGptGateway?.url ?: formatGateway?.url ?: openRouterGateway?.url,
             )
             Log.d("ClaudeBridge", "Provider: ${provider.kind}, Model: ${provider.model}, BaseUrl: ${provider.baseUrl}")
             Log.d("ClaudeBridge", "Launch environment keys: ${launch.environment.keys}")
@@ -212,9 +221,13 @@ class ClaudeRuntimeBridge(
                             pendingOutput.delete(0, newline + 1)
                             if (line.isNotBlank()) {
                                 Log.d("ClaudeBridge", "OUTPUT: $line")
-                                ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
+                                chatGptGateway?.failureMessage?.let { reason ->
                                     process.destroyForcibly()
                                     throw ProviderSessionException(reason)
+                                }
+                                ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
+                                    process.destroyForcibly()
+                                    throw ProviderSessionException(chatGptGateway?.failureMessage ?: reason)
                                 }
                                 if (!consumeClaudeEvent(sessionId, line)) {
                                     lastDiagnostic = line.takeLast(500)
@@ -247,6 +260,9 @@ class ClaudeRuntimeBridge(
                 } else if (!File(checkpointDir(projectId), "changes.json").isFile) {
                     acceptLastChanges(projectId)
                 }
+                if (chatGptGateway?.failureMessage != null && !userStopRequested) {
+                    throw ProviderSessionException(checkNotNull(chatGptGateway?.failureMessage))
+                }
                 if (exit == 0) {
                     emitCompletedOnce(sessionId)
                     finishForegroundRuntime(
@@ -273,11 +289,14 @@ class ClaudeRuntimeBridge(
                 )
             }
         }
-        formatGateway?.close()
-        openRouterGateway?.close()
-        activeProcess = null
-        activeSessionId = null
-        RuntimeTaskController.stopAction = null
+        } finally {
+            chatGptGateway?.close()
+            formatGateway?.close()
+            openRouterGateway?.close()
+            activeProcess = null
+            activeSessionId = null
+            RuntimeTaskController.stopAction = null
+        }
         sessionId
     }
 

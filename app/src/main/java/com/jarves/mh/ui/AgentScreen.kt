@@ -155,6 +155,7 @@ internal fun formatAntigravityModelTier(id: String): String = when {
 @Composable
 fun AgentScreen(
     state: AppUiState,
+    chatGptActions: ChatGptActions,
     onSaveProvider: (ProviderProfile, String) -> Unit,
     onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
@@ -970,6 +971,17 @@ fun AgentScreen(
                 } else {
                     AgentProviderCard(
                         state = state,
+                        chatGptConnection = {
+                            ChatGptConnectionCard(
+                                auth = state.chatGptAuth,
+                                model = model,
+                                onModel = { model = it },
+                                actions = chatGptActions,
+                                onValidate = { chosen -> onValidateProvider(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "", emptyList()) },
+                                onSave = { chosen -> onSaveProvider(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "") },
+                                enabled = !state.isRunning,
+                            )
+                        },
                         selectedKind = selectedKind,
                         baseUrl = baseUrl,
                         model = model,
@@ -1475,6 +1487,7 @@ private fun AgentAntigravityCard(
 @Composable
 private fun AgentProviderCard(
     state: AppUiState,
+    chatGptConnection: @Composable () -> Unit,
     selectedKind: ProviderKind,
     baseUrl: String,
     model: String,
@@ -1575,6 +1588,12 @@ private fun AgentProviderCard(
                     }
 
                 }
+            }
+
+            if (selectedKind == ProviderKind.CHATGPT) {
+                Spacer(Modifier.height(12.dp))
+                chatGptConnection()
+                return@Column
             }
 
             if (selectedKind != ProviderKind.CLAUDE) {

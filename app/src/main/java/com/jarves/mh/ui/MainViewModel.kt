@@ -12,6 +12,8 @@ import androidx.lifecycle.viewModelScope
 import androidx.core.content.ContextCompat
 import androidx.core.content.FileProvider
 import com.jarves.mh.BuildConfig
+import com.jarves.mh.auth.ChatGptAuthController
+import com.jarves.mh.auth.ChatGptAuthState
 import com.jarves.mh.data.ApiKeyVault
 import com.jarves.mh.data.ApiKeyInfo
 import com.jarves.mh.data.AppPreferences
@@ -37,6 +39,7 @@ import com.jarves.mh.network.ModelDiscoveryResult
 import com.jarves.mh.network.ProviderApiClient
 import com.jarves.mh.network.GitHubRepository
 import com.jarves.mh.runtime.ClaudeRuntimeBridge
+import com.jarves.mh.runtime.ChatGptResponsesGateway
 import com.jarves.mh.runtime.DshRuntimeBridge
 import com.jarves.mh.runtime.AgentRegistry
 import com.jarves.mh.runtime.AgentUpdateInfo
@@ -150,6 +153,7 @@ data class AppUiState(
     val backgroundSetupComplete: Boolean = false,
     val provider: ProviderProfile = ProviderProfile(ProviderKind.ANTHROPIC),
     val activeApiKeyName: String? = null,
+    val chatGptAuth: ChatGptAuthState = ChatGptAuthState(),
     val themeMode: com.jarves.mh.ui.theme.AppThemeMode = com.jarves.mh.ui.theme.AppThemeMode.DARK,
     val apiPingStatus: ApiPingStatus = ApiPingStatus.IDLE,
     val apiPingMessage: String? = null,
@@ -248,7 +252,13 @@ data class AppUiState(
 class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val vault = ApiKeyVault(application)
     private val preferences = AppPreferences(application)
-    private val claudeRuntime = ClaudeRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
+    private val chatGptAuthController = ChatGptAuthController(application)
+    private var chatGptAccountJob: kotlinx.coroutines.Job? = null
+    private val claudeRuntime = ClaudeRuntimeBridge(
+        application,
+        chatGptAccessToken = { chatGptAuthController.validAccessToken() },
+        secretFor = { profile -> vault.get(profile.kind.name) },
+    )
     private val dshRuntime = DshRuntimeBridge(application) { profile -> vault.get(profile.kind.name) }
     private val installer = RuntimeInstaller(application)
     private val antigravityRuntime = AntigravityRuntimeBridge(
@@ -322,6 +332,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     )
 
     init {
+        viewModelScope.launch {
+            chatGptAuthController.state.collect { auth ->
+                _state.update { current ->
+                    val connectionChanged = current.provider.kind == ProviderKind.CHATGPT &&
+                        (current.chatGptAuth.activeAccountId != auth.activeAccountId ||
+                            current.chatGptAuth.connected != auth.connected || current.chatGptAuth.planEnabled != auth.planEnabled)
+                    current.copy(
+                        chatGptAuth = auth,
+                        provider = if (current.provider.kind == ProviderKind.CHATGPT) {
+                            current.provider.copy(hasSecret = auth.connected && auth.planEnabled)
+                        } else current.provider,
+                        activeApiKeyName = if (current.provider.kind == ProviderKind.CHATGPT) null else current.activeApiKeyName,
+                        apiPingStatus = if (connectionChanged) ApiPingStatus.IDLE else current.apiPingStatus,
+                        apiPingMessage = if (connectionChanged) null else current.apiPingMessage,
+                    )
+                }
+            }
+        }
+        viewModelScope.launch {
+            chatGptAuthController.restore()
+            if (chatGptAuthController.state.value.planEnabled) chatGptAuthController.listModels()
+        }
         // GitHub's official CLI owns its OAuth credential. Remove credentials from
         // the retired custom OAuth implementation and discover the real CLI status.
         vault.remove(LEGACY_GITHUB_TOKEN_KEY)
@@ -938,11 +970,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _state.update { it.copy(themeMode = mode) }
     }
 
-    fun getSavedApiKey(kind: ProviderKind): String = vault.get(kind.name).orEmpty()
+    fun getSavedApiKey(kind: ProviderKind): String = if (kind == ProviderKind.CHATGPT) "" else vault.get(kind.name).orEmpty()
 
-    fun getSavedApiKeys(kind: ProviderKind): List<ApiKeyInfo> = vault.list(kind.name)
+    fun getSavedApiKeys(kind: ProviderKind): List<ApiKeyInfo> = if (kind == ProviderKind.CHATGPT) emptyList() else vault.list(kind.name)
 
     fun addApiKey(kind: ProviderKind, name: String, secret: String): List<ApiKeyInfo> {
+        if (kind == ProviderKind.CHATGPT) return emptyList()
         vault.add(kind.name, name, secret)
         val keys = vault.list(kind.name)
         refreshActiveApiKey(kind)
@@ -950,12 +983,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun activateApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        if (kind == ProviderKind.CHATGPT) return emptyList()
         vault.activate(kind.name, keyId)
         refreshActiveApiKey(kind)
         return vault.list(kind.name)
     }
 
     fun removeApiKey(kind: ProviderKind, keyId: String): List<ApiKeyInfo> {
+        if (kind == ProviderKind.CHATGPT) return emptyList()
         vault.remove(kind.name, keyId)
         refreshActiveApiKey(kind)
         return vault.list(kind.name)
@@ -963,6 +998,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun refreshActiveApiKey(kind: ProviderKind) {
         if (_state.value.provider.kind != kind) return
+        if (kind == ProviderKind.CHATGPT) {
+            _state.update { it.copy(activeApiKeyName = null, provider = it.provider.copy(hasSecret = it.chatGptAuth.connected && it.chatGptAuth.planEnabled)) }
+            return
+        }
         val keys = vault.list(kind.name)
         _state.update { current ->
             current.copy(
@@ -1273,6 +1312,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun finishOnboarding(profile: ProviderProfile, secret: String) {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            val auth = _state.value.chatGptAuth
+            if (_state.value.agentKind != AgentKind.CLAUDE_CODE || !auth.connected || !auth.planEnabled || auth.models.none { it.id == profile.model }) {
+                _state.update { it.copy(toastMessage = "Connect ChatGPT and select an available model first.") }
+                return
+            }
+            val saved = profile.copy(baseUrl = ProviderKind.CHATGPT.defaultBaseUrl, hasSecret = true)
+            preferences.saveProvider(saved, _state.value.agentKind)
+            preferences.onboardingComplete = true
+            _state.update { it.copy(onboardingComplete = true, provider = saved, activeApiKeyName = null, startupStage = StartupStage.READY, apiPingStatus = ApiPingStatus.OK, apiPingMessage = "Using ChatGPT plan") }
+            return
+        }
         vault.put(profile.kind.name, secret)
         val saved = profile.copy(
             hasSecret = secret.isNotBlank() || vault.contains(profile.kind.name),
@@ -1331,7 +1382,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(
                 agentKind = kind,
                 primaryAgentKind = if (selectingInitialAgent) kind else current.primaryAgentKind,
-                provider = provider,
+                provider = if (provider.kind == ProviderKind.CHATGPT) provider.copy(hasSecret = current.chatGptAuth.planEnabled && current.chatGptAuth.connected) else provider,
                 activeApiKeyName = vault.list(provider.kind.name).firstOrNull(ApiKeyInfo::isActive)?.name,
                 // Ping results belong to the previous agent; never leak them across.
                 apiPingStatus = ApiPingStatus.IDLE,
@@ -1729,6 +1780,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     suspend fun discoverModels(profile: ProviderProfile, secret: String): ModelDiscoveryResult {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            val models = chatGptAuthController.listModels()
+            return if (models.isEmpty()) ModelDiscoveryResult.Failure(chatGptAuthController.state.value.error ?: "No ChatGPT models available.")
+            else ModelDiscoveryResult.Success(models, "https://api.openai.com/v1/models")
+        }
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
         return providerApi.discoverModels(profile.baseUrl, key, providerProtocolForAgent(profile, _state.value.agentKind))
     }
@@ -1738,6 +1794,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         secret: String,
         models: List<com.jarves.mh.network.DiscoveredModel>,
     ): ConnectionValidation {
+        if (profile.kind == ProviderKind.CHATGPT) {
+            val auth = chatGptAuthController.state.value
+            val accountId = auth.activeAccountId
+            if (auth.busy || chatGptAccountJob?.isActive == true || !auth.connected || !auth.planEnabled || accountId == null || auth.models.none { it.id == profile.model }) {
+                return ConnectionValidation.Failure("Connect ChatGPT and select an available model first.")
+            }
+            val result = ChatGptResponsesGateway.validateConnection(profile.model) { chatGptAuthController.validAccessToken(accountId) }
+            val current = chatGptAuthController.state.value
+            return if (current.activeAccountId != accountId || current.busy || !current.connected || !current.planEnabled || chatGptAccountJob?.isActive == true) {
+                ConnectionValidation.Failure("The ChatGPT connection changed during this test. Test the selected account again.")
+            } else result
+        }
         val key = secret.ifBlank { vault.get(profile.kind.name).orEmpty() }
         return providerApi.validate(
             profile.baseUrl,
@@ -1760,16 +1828,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (_state.value.apiPingStatus == ApiPingStatus.PINGING) return
         _state.update { it.copy(apiPingStatus = ApiPingStatus.PINGING, apiPingMessage = "Sending a minimal test request…") }
         viewModelScope.launch {
-            val key = vault.get(profile.kind.name).orEmpty()
-            val result = providerApi.validate(
-                profile.baseUrl,
-                profile.model,
-                key,
-                providerProtocolForAgent(profile, _state.value.agentKind),
-                emptyList(),
-                profile.openRouterProviderOrder,
-                profile.openRouterAllowFallbacks,
-            )
+            val result = validateProvider(profile, "", emptyList())
             when (result) {
                 is ConnectionValidation.Success -> _state.update {
                     it.copy(apiPingStatus = ApiPingStatus.OK, apiPingMessage = "API responded successfully")
@@ -3010,6 +3069,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun sendPrompt(prompt: String) {
         val project = state.value.activeProject ?: return
+        if (_state.value.provider.kind == ProviderKind.CHATGPT) {
+            val auth = chatGptAuthController.state.value
+            if (_state.value.agentKind != AgentKind.CLAUDE_CODE || auth.busy || chatGptAccountJob?.isActive == true ||
+                !auth.connected || !auth.planEnabled || auth.models.none { it.id == _state.value.provider.model }) {
+                _state.update { it.copy(toastMessage = "Finish connecting ChatGPT and save an available model in Agent settings first.") }
+                return
+            }
+        }
         if (_state.value.agentKind == AgentKind.ANTIGRAVITY &&
             _state.value.antigravityAuth.status != AntigravityAuthStatus.SIGNED_IN) {
             _state.update { it.copy(toastMessage = "Sign in to Antigravity from Settings before starting a task.") }
@@ -3532,6 +3599,54 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             current.copy(projectChats = chats)
         }
         preferences.saveProjectChats(project.id, _state.value.projectChats)
+    }
+
+    private fun chatGptAccountCanChange(): Boolean {
+        if (_state.value.isRunning) {
+            _state.update { it.copy(toastMessage = "Stop the current task before changing ChatGPT accounts.") }
+            return false
+        }
+        return chatGptAccountJob?.isActive != true
+    }
+
+    fun startChatGptLogin() {
+        if (chatGptAccountCanChange()) chatGptAccountJob = viewModelScope.launch { chatGptAuthController.signIn(::openChatGptBrowser) }
+    }
+
+    fun addChatGptAccount() {
+        if (chatGptAccountCanChange()) chatGptAccountJob = viewModelScope.launch { chatGptAuthController.signInNewAccount(::openChatGptBrowser) }
+    }
+
+    private fun openChatGptBrowser(url: String) {
+        getApplication<Application>().startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+    }
+
+    fun cancelChatGptLogin() = chatGptAuthController.cancelSignIn()
+
+    fun disconnectChatGpt() {
+        if (chatGptAccountCanChange()) chatGptAccountJob = viewModelScope.launch { chatGptAuthController.signOut() }
+    }
+
+    fun refreshChatGptModels() {
+        viewModelScope.launch { chatGptAuthController.listModels() }
+    }
+
+    fun selectChatGptAccount(clientId: String) {
+        if (chatGptAccountCanChange()) chatGptAccountJob = viewModelScope.launch { chatGptAuthController.selectAccount(clientId) }
+    }
+
+    fun chatGptActions() = ChatGptActions(
+        signIn = ::startChatGptLogin,
+        addAccount = ::addChatGptAccount,
+        cancel = ::cancelChatGptLogin,
+        disconnect = ::disconnectChatGpt,
+        refreshModels = ::refreshChatGptModels,
+        selectAccount = ::selectChatGptAccount,
+    )
+
+    override fun onCleared() {
+        chatGptAuthController.cancelSignIn()
+        super.onCleared()
     }
 
     companion object {

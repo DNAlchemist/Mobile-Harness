@@ -1,6 +1,6 @@
 # Mobile Harness Privacy Policy
 
-**Effective date:** August 24, 2026
+**Effective date:** October 8, 2026 (community fork)
 
 Mobile Harness is a local-first Android development workspace. This policy explains what information the app handles, where it is stored, and when information leaves the device.
 
@@ -18,6 +18,8 @@ Mobile Harness may handle the following information when you choose to provide i
 
 Projects, conversations, attachments, runtime files, terminal history, and diagnostics are stored in the app's private storage on your device. Provider API keys are encrypted using a key managed by Android Keystore before they are persisted.
 
+ChatGPT OAuth access, refresh and ID tokens, account registration IDs, email labels and the per-installation host ID are encrypted with Android Keystore AES-GCM in private no-backup storage. OAuth tokens are never passed to the coding CLI. Disconnect removes the selected account's local tokens and attempts OpenAI revocation; the host and registration mapping remain for reconnection. If revocation cannot be confirmed, the app says so and you can disconnect it in ChatGPT settings.
+
 Mobile Harness does not currently include advertising or analytics SDKs and does not operate a first-party user account system.
 
 ## Information sent off the device
@@ -27,6 +29,8 @@ When you use an AI feature, the content required to answer your request may be t
 During runtime setup and maintenance, the app connects to software distribution services—including Ubuntu, Anthropic, Node.js, Composer, App Dev For All's Android development assets, and configured Linux package repositories—to download required components. Those services may receive standard network information such as your IP address, request time, requested file, and user-agent information.
 
 Mobile Harness does not sell personal information. It does not send projects or conversations to the Mobile Harness developer unless you explicitly share them, submit diagnostics, or use a future opt-in backup or support feature.
+
+The ChatGPT provider opens auth.openai.com in your browser and sends authorized requests directly to api.openai.com. Each inference request uses `store: false`; OpenAI still applies its own policies. Tool results and relevant project context are included as needed. A localhost gateway keeps OAuth credentials in the native Android client.
 
 ## Permissions
 
@@ -58,4 +62,4 @@ This policy may be updated as Mobile Harness changes. Material changes will be r
 
 ## Contact
 
-For privacy questions or requests, open an issue at [github.com/techjarves/Mobile-Harness/issues](https://github.com/techjarves/Mobile-Harness/issues).
+For privacy questions or requests, open an issue at [github.com/DNAlchemist/Mobile-Harness/issues](https://github.com/DNAlchemist/Mobile-Harness/issues).

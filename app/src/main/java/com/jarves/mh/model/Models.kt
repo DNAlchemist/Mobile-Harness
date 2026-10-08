@@ -19,6 +19,15 @@ enum class ProviderKind(
     val fixedProtocol: Boolean = false,
 ) {
     CLAUDE("Claude subscription", "Pro, Max, Team or Enterprise", ProviderProtocol.CLAUDE_LOGIN, "", "default"),
+    CHATGPT(
+        "ChatGPT subscription",
+        "Sign in with your ChatGPT account",
+        ProviderProtocol.OPENAI_RESPONSES,
+        "https://api.openai.com/v1",
+        "",
+        fixedBaseUrl = true,
+        fixedProtocol = true,
+    ),
     ANTHROPIC("Anthropic API", "Usage billed through Console", ProviderProtocol.ANTHROPIC, "https://api.anthropic.com", "claude-sonnet-4-6"),
     LLM_ROUTER("OpenRouter", "Use your OpenRouter API key", ProviderProtocol.OPENROUTER, "https://openrouter.ai/api", "~anthropic/claude-sonnet-latest"),
     DEEPSEEK("DeepSeek", "Use your DeepSeek API key", ProviderProtocol.ANTHROPIC_GATEWAY, "https://api.deepseek.com/anthropic", "deepseek-v4-flash"),

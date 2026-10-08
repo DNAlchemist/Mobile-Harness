@@ -25,7 +25,7 @@ set_target_properties(talloc PROPERTIES OUTPUT_NAME talloc SOVERSION 2)
 
 add_library(android-shmem SHARED "${SHM_ROOT}/shmem.c")
 target_include_directories(android-shmem PUBLIC "${SHM_ROOT}")
-target_compile_definitions(android-shmem PRIVATE _PATH_TMP="/data/data/com.jarves.mh/cache/")
+target_compile_definitions(android-shmem PRIVATE _PATH_TMP="/data/data/com.dnalchemist.mobileharness/cache/")
 target_link_libraries(android-shmem PRIVATE log android)
 
 set(PROOT_SOURCES
