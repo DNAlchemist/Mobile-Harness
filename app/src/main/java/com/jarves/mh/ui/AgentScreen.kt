@@ -214,8 +214,7 @@ fun AgentScreen(
     val orderedAgents = remember(state.primaryAgentKind) {
         listOf(state.primaryAgentKind) + AgentKind.entries.filterNot { it == state.primaryAgentKind }
     }
-    val viewedAgentInstalled = viewedAgent == state.agentKind ||
-        state.installedAgentVersions.containsKey(viewedAgent)
+    val viewedAgentInstalled = state.installedAgentVersions.containsKey(viewedAgent)
 
     val providerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val antigravitySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -821,7 +820,7 @@ fun AgentScreen(
                         ) {
                             orderedAgents.forEach { agent ->
                                 val isSelected = viewedAgent == agent
-                                val isInstalled = agent == state.agentKind || state.installedAgentVersions.containsKey(agent)
+                                val isInstalled = state.installedAgentVersions.containsKey(agent)
                                 val updateAvailable = state.agentUpdates.containsKey(agent)
                                 val shortTitle = when (agent) {
                                     AgentKind.ANTIGRAVITY -> "Antigravity"

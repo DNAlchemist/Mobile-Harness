@@ -1042,22 +1042,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             resumeRuntimeSetupService()
             return
         }
-        val installed = withContext(Dispatchers.IO) {
+        val coreInstalled = withContext(Dispatchers.IO) {
             // Upgrades from the old single-bundle layout keep every already-installed tool.
             installer.migrateLegacyToolMarkers()
             installer.isInstalled().also { ready ->
                 if (ready) installer.cleanupLegacyWorkspaceScaffolding()
             }
         }
+        val selectedAgentInstalled = coreInstalled && withContext(Dispatchers.IO) {
+            installer.isAgentInstalled(_state.value.agentKind)
+        }
         _state.update { current ->
             current.copy(
-                installedDevStacks = if (installed) installer.installedStacks() else current.installedDevStacks,
-                installedAgentVersions = if (installed) installer.installedAgentVersions() else emptyMap(),
+                installedDevStacks = if (coreInstalled) installer.installedStacks() else current.installedDevStacks,
+                installedAgentVersions = if (coreInstalled) installer.installedAgentVersions() else emptyMap(),
             )
         }
         when {
-            !installed && setupSnapshot.status == RuntimeSetupStatus.ERROR -> onSetupSnapshot(setupSnapshot)
-            !installed -> _state.update { it.copy(startupStage = StartupStage.SETUP_REQUIRED, startupProgress = 0f) }
+            (!coreInstalled || !selectedAgentInstalled) && setupSnapshot.status == RuntimeSetupStatus.ERROR -> onSetupSnapshot(setupSnapshot)
+            !coreInstalled || !selectedAgentInstalled -> _state.update { it.copy(startupStage = StartupStage.SETUP_REQUIRED, startupProgress = 0f) }
             !preferences.onboardingComplete -> {
                 preferences.runtimeSetupComplete = true
                 _state.update { it.copy(startupStage = StartupStage.MODEL_SETUP, startupProgress = 1f) }
@@ -1086,7 +1089,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun retryStartup() {
-        if (installer.isInstalled()) viewModelScope.launch { initializeRuntime() } else {
+        if (installer.isInstalled() && installer.isAgentInstalled(_state.value.agentKind)) viewModelScope.launch { initializeRuntime() } else {
             _state.update { it.copy(startupStage = StartupStage.SETUP_REQUIRED, startupError = null) }
             startRuntimeSetup()
         }
@@ -1122,8 +1125,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 setupCompletionHandled = true
                 preferences.runtimeSetupComplete = true
                 viewModelScope.launch {
-                    val installedStacks = withContext(Dispatchers.IO) { installer.installedStacks() }
-                    _state.update { it.copy(installedDevStacks = installedStacks) }
+                    val (installedStacks, installedAgents) = withContext(Dispatchers.IO) {
+                        installer.installedStacks() to installer.installedAgentVersions()
+                    }
+                    _state.update { it.copy(installedDevStacks = installedStacks, installedAgentVersions = installedAgents) }
+                    val runtimeReady = withContext(Dispatchers.IO) {
+                        installer.isInstalled() && installer.isAgentInstalled(_state.value.agentKind)
+                    }
+                    if (!runtimeReady) {
+                        _state.update { it.copy(startupStage = StartupStage.SETUP_REQUIRED, startupProgress = 0f) }
+                        return@launch
+                    }
                     if (preferences.onboardingComplete) {
                         initializeRuntime()
                     } else {
@@ -3068,7 +3080,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendPrompt(prompt: String) {
-        val project = state.value.activeProject ?: return
+        val current = state.value
+        val project = current.activeProject ?: return
+        if (!installer.isAgentInstalled(current.agentKind)) {
+            _state.update { it.copy(toastMessage = "Install ${current.agentKind.title} on the Agent screen before starting a task.") }
+            return
+        }
         if (_state.value.provider.kind == ProviderKind.CHATGPT) {
             val auth = chatGptAuthController.state.value
             if (_state.value.agentKind != AgentKind.CLAUDE_CODE || auth.busy || chatGptAccountJob?.isActive == true ||
