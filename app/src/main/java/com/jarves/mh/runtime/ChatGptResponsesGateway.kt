@@ -461,6 +461,7 @@ internal object ChatGptResponsesSse {
         var characters = 0
         var eventType = ""
         val data = StringBuilder()
+        val completedOutput = mutableMapOf<Int, JSONObject>()
         val deadline = System.nanoTime() + 5 * 60 * 1_000_000_000L
         fun event(): JSONObject? {
             if (data.isEmpty()) return null
@@ -473,9 +474,31 @@ internal object ChatGptResponsesSse {
             val type = json.optString("type").ifBlank { eventType }
             val response = json.optJSONObject("response")
             when (type) {
+                "response.output_item.done" -> {
+                    val indexValue = json.opt("output_index")
+                    require(indexValue is Number && indexValue.toInt() >= 0 &&
+                        indexValue.toDouble() == indexValue.toInt().toDouble()) { "ChatGPT returned an invalid output index" }
+                    val index = indexValue.toInt()
+                    val item = json.optJSONObject("item") ?: error("ChatGPT returned an invalid completed output item")
+                    val previous = completedOutput[index]
+                    require(previous == null || equivalentJson(previous, item)) { "ChatGPT returned conflicting completed output items" }
+                    completedOutput[index] = JSONObject(item.toString())
+                }
                 "response.completed" -> {
                     if (response == null || response.optString("status") != "completed") {
                         throw ChatGptResponsesException(502, "ChatGPT response did not complete")
+                    }
+                    val output = response.opt("output")
+                    require(output == null || output == JSONObject.NULL || output is JSONArray) { "ChatGPT returned invalid response output" }
+                    if ((output !is JSONArray || output.length() == 0) && completedOutput.isNotEmpty()) {
+                        val indices = completedOutput.keys.sorted()
+                        require(indices.withIndex().all { (expected, actual) -> expected == actual }) {
+                            "ChatGPT completed with missing output items"
+                        }
+                        // Some streams omit terminal output; finalized items retain statuses, tool calls and encrypted reasoning.
+                        return JSONObject(response.toString()).put("output", JSONArray().also { recovered ->
+                            indices.forEach { recovered.put(completedOutput.getValue(it)) }
+                        })
                     }
                     return response
                 }
@@ -517,6 +540,16 @@ internal object ChatGptResponsesSse {
         }
         event()?.let { return it }
         throw ChatGptResponsesException(502, "ChatGPT disconnected before completing the response")
+    }
+
+    private fun equivalentJson(left: Any?, right: Any?): Boolean = when {
+        left is JSONObject && right is JSONObject -> {
+            val keys = left.keys().asSequence().toSet()
+            keys == right.keys().asSequence().toSet() && keys.all { equivalentJson(left.opt(it), right.opt(it)) }
+        }
+        left is JSONArray && right is JSONArray -> left.length() == right.length() &&
+            (0 until left.length()).all { equivalentJson(left.opt(it), right.opt(it)) }
+        else -> left == right
     }
 
     private fun readBoundedLine(reader: BufferedReader): String? {

@@ -190,6 +190,75 @@ class ChatGptResponsesGatewayTest {
     }
 
     @Test
+    fun sseRecoversFinalizedTextWhenCompletedOutputIsAbsentNullOrEmpty() {
+        val item = JSONObject("""{"type":"message","id":"msg_1","status":"completed","role":"assistant",
+            "content":[{"type":"output_text","text":"OK","annotations":[]}]}""")
+        for (output in listOf("", ",\"output\":null", ",\"output\":[]")) {
+            val response = readSse(itemDone(0, item) +
+                "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp_ok\",\"status\":\"completed\"$output}}\n\n")
+            val message = ChatGptResponsesAdapter("model").message(response, "model")
+            assertEquals("OK", message.getJSONArray("content").getJSONObject(0).getString("text"))
+            assertEquals("msg_1", response.getJSONArray("output").getJSONObject(0).getString("id"))
+        }
+    }
+
+    @Test
+    fun recoveredFinalizedToolItemsRetainOrderingNamespaceAndEncryptedReasoningAcrossTheNextRequest() {
+        val reasoning = JSONObject("""{"type":"reasoning","id":"rs_1","summary":[],"encrypted_content":"opaque-reasoning"}""")
+        val tool = JSONObject("""{"type":"function_call","id":"fc_1","call_id":"call_read","namespace":"mobile_harness",
+            "name":"read_file","arguments":"{\"path\":\"app.kt\"}","status":"completed"}""")
+        val response = readSse(itemDone(1, tool) + itemDone(0, reasoning) +
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[]}}\n\n")
+        val adapter = ChatGptResponsesAdapter("model")
+        val message = adapter.message(response, "model")
+        assertEquals("tool_use", message.getString("stop_reason"))
+        val next = adapter.request(JSONObject().put("messages", JSONArray()
+            .put(JSONObject().put("role", "assistant").put("content", message.getJSONArray("content")))
+            .put(JSONObject("""{"role":"user","content":[{"type":"tool_result","tool_use_id":"call_read","content":"file contents"}]}"""))))
+            .getJSONArray("input")
+        assertEquals("rs_1", next.getJSONObject(0).getString("id"))
+        assertEquals("opaque-reasoning", next.getJSONObject(0).getString("encrypted_content"))
+        assertEquals("call_read", next.getJSONObject(1).getString("call_id"))
+        assertEquals("mobile_harness", next.getJSONObject(1).getString("namespace"))
+        assertEquals("app.kt", JSONObject(next.getJSONObject(1).getString("arguments")).getString("path"))
+        assertEquals("call_read", next.getJSONObject(2).getString("call_id"))
+        assertEquals("file contents", next.getJSONObject(2).getString("output"))
+    }
+
+    @Test
+    fun nonemptyCompletedOutputIsAuthoritativeOverEarlierFinalizedItems() {
+        val stale = JSONObject("""{"type":"message","content":[{"type":"output_text","text":"Earlier text"}]}""")
+        val response = readSse(itemDone(0, stale) +
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"Final text\"}]}]}}\n\n")
+        assertEquals("Final text", response.getJSONArray("output").getJSONObject(0).getJSONArray("content").getJSONObject(0).getString("text"))
+    }
+
+    @Test
+    fun finalizedOutputCannotMakeAnUnfinishedOrFailedStreamSuccessful() {
+        val item = JSONObject("""{"type":"message","content":[{"type":"output_text","text":"Partial answer"}]}""")
+        expectFailure("before completing") { readSse(itemDone(0, item)) }
+        expectFailure("without a completed response") { readSse(itemDone(0, item) + "data: [DONE]\n\n") }
+        expectFailure("Plan limit reached") {
+            readSse(itemDone(0, item) + "data: {\"type\":\"response.failed\",\"response\":{\"error\":{\"code\":\"insufficient_quota\",\"message\":\"Plan limit reached\"}}}\n\n")
+        }
+        expectFailure("max_output_tokens") {
+            readSse(itemDone(0, item) + "data: {\"type\":\"response.incomplete\",\"response\":{\"incomplete_details\":{\"reason\":\"max_output_tokens\"}}}\n\n")
+        }
+    }
+
+    @Test
+    fun recoveryRejectsMissingNegativeAndContradictoryOutputIndices() {
+        val first = JSONObject("""{"type":"message","content":[{"type":"output_text","text":"First"}]}""")
+        val second = JSONObject("""{"type":"message","content":[{"type":"output_text","text":"Second"}]}""")
+        val completed = "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        expectFailure("missing output items") { readSse(itemDone(1, first) + completed) }
+        expectFailure("invalid output index") { readSse(itemDone(-1, first) + completed) }
+        expectFailure("conflicting completed output items") { readSse(itemDone(0, first) + itemDone(0, second) + completed) }
+        val recovered = readSse(itemDone(0, first) + itemDone(0, JSONObject(first.toString())) + completed)
+        assertEquals(1, recovered.getJSONArray("output").length())
+    }
+
+    @Test
     fun sseQuotaErrorInsideHttpSuccessIsFailure() {
         try {
             readSse("data: {\"type\":\"response.failed\",\"response\":{\"status\":\"failed\",\"error\":{\"code\":\"insufficient_quota\",\"message\":\"Plan limit reached\"}}}\n\n")
@@ -254,6 +323,9 @@ class ChatGptResponsesGatewayTest {
     }
 
     private fun readSse(value: String): JSONObject = ChatGptResponsesSse.readCompleted(StringReader(value).buffered())
+
+    private fun itemDone(index: Int, item: JSONObject): String = "data: " + JSONObject()
+        .put("type", "response.output_item.done").put("output_index", index).put("item", item).toString() + "\n\n"
 
     private fun expectFailure(message: String, block: () -> Unit) {
         try {
