@@ -11,50 +11,51 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalView
 import androidx.core.view.WindowCompat
 
-val PocketOrange = Color(0xFFF28C52)
-val PocketBlue = Color(0xFF8EA8FF)
-val PocketGreen = Color(0xFF69D69E)
-val PocketBackground = Color(0xFF0B0E14)
-val PocketSurface = Color(0xFF131821)
-val PocketSurfaceVariant = Color(0xFF1B222D)
-val PocketOutline = Color(0xFF2A3240)
+// Keep these shared tokens so existing screens inherit the JVM.run palette.
+val PocketOrange = Color(0xFF78E8D0)
+val PocketBlue = Color(0xFF9AC9F8)
+val PocketGreen = Color(0xFFC8F36A)
+val PocketBackground = Color(0xFF091619)
+val PocketSurface = Color(0xFF102125)
+val PocketSurfaceVariant = Color(0xFF193035)
+val PocketOutline = Color(0xFF304A50)
 
 private val DarkColors = darkColorScheme(
     primary = PocketOrange,
-    onPrimary = Color(0xFF241107),
-    primaryContainer = Color(0xFF42281D),
-    onPrimaryContainer = Color(0xFFFFDDCC),
+    onPrimary = Color(0xFF00382F),
+    primaryContainer = Color(0xFF124D43),
+    onPrimaryContainer = Color(0xFFB8F9E7),
     secondary = PocketBlue,
-    onSecondary = Color(0xFF001F58),
+    onSecondary = Color(0xFF003258),
     tertiary = PocketGreen,
-    onTertiary = Color(0xFF00391E),
+    onTertiary = Color(0xFF263900),
     background = PocketBackground,
-    onBackground = Color(0xFFE6EDF3),
+    onBackground = Color(0xFFE7F3F1),
     surface = PocketSurface,
-    onSurface = Color(0xFFE6EDF3),
+    onSurface = Color(0xFFE7F3F1),
     surfaceVariant = PocketSurfaceVariant,
-    onSurfaceVariant = Color(0xFF9AA0A6),
+    onSurfaceVariant = Color(0xFFA5BFBE),
     outline = PocketOutline,
-    outlineVariant = Color(0xFF333B4A),
+    outlineVariant = Color(0xFF274044),
 )
 
 private val LightColors = lightColorScheme(
-    primary = Color(0xFFD85A20),
+    primary = Color(0xFF006B59),
     onPrimary = Color(0xFFFFFFFF),
-    primaryContainer = Color(0xFFFFE0D2),
-    onPrimaryContainer = Color(0xFF451A08),
-    secondary = Color(0xFF3366CC),
+    primaryContainer = Color(0xFFB5F1DE),
+    onPrimaryContainer = Color(0xFF002E25),
+    secondary = Color(0xFF285F86),
     onSecondary = Color(0xFFFFFFFF),
-    tertiary = Color(0xFF1B8A5A),
+    tertiary = Color(0xFF476600),
     onTertiary = Color(0xFFFFFFFF),
-    background = Color(0xFFF6F8FA),
-    onBackground = Color(0xFF1F2328),
+    background = Color(0xFFF2F8F5),
+    onBackground = Color(0xFF102320),
     surface = Color(0xFFFFFFFF),
-    onSurface = Color(0xFF1F2328),
-    surfaceVariant = Color(0xFFEAEFF5),
-    onSurfaceVariant = Color(0xFF57606A),
-    outline = Color(0xFFD0D7DE),
-    outlineVariant = Color(0xFFD8DEE4),
+    onSurface = Color(0xFF102320),
+    surfaceVariant = Color(0xFFE2EEE9),
+    onSurfaceVariant = Color(0xFF405D54),
+    outline = Color(0xFF6E8780),
+    outlineVariant = Color(0xFFBFCEC7),
 )
 
 enum class AppThemeMode { SYSTEM, DARK, LIGHT }

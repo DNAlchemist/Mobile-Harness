@@ -70,7 +70,7 @@ android {
     }
 
     defaultConfig {
-        applicationId = "com.jarves.mh"
+        applicationId = "run.jvm.mobileharness"
         minSdk = 28
         // The direct APK retains the proven target-28 PRoot execution path. The
         // Play build targets current Android while its runtime path is validated.
@@ -120,6 +120,8 @@ android {
 
     buildTypes {
         debug {
+            applicationIdSuffix = ".debug"
+            externalNativeBuild.cmake.arguments += "-DMH_APPLICATION_ID=run.jvm.mobileharness.debug"
             buildConfigField(
                 "String",
                 "TEST_OPENROUTER_API_KEY",
@@ -142,7 +144,6 @@ android {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
     }
-    kotlinOptions.jvmTarget = "17"
     buildFeatures {
         compose = true
         buildConfig = true
@@ -157,6 +158,26 @@ android {
     packaging.jniLibs.useLegacyPackaging = true
     androidResources.noCompress += "zst"
 }
+
+kotlin {
+    compilerOptions {
+        jvmTarget.set(org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17)
+    }
+}
+
+// Harness's Play action runs assembleDebug and looks in outputs/apk/debug.
+// Publish the online variant there while retaining the normal flavor outputs.
+val prepareHarnessDebugApk = tasks.register<Sync>("prepareHarnessDebugApk") {
+    dependsOn("assembleOnlineDebug")
+    from(layout.buildDirectory.dir("outputs/apk/online/debug")) {
+        include("*.apk")
+        rename { "app-debug.apk" }
+    }
+    into(layout.buildDirectory.dir("outputs/apk/debug"))
+}
+
+tasks.matching { it.name == "assembleDebug" }
+    .configureEach { dependsOn(prepareHarnessDebugApk) }
 
 tasks.matching { it.name.startsWith("mergeOffline") && it.name.endsWith("Assets") }
     .configureEach { dependsOn(prepareOfflineRuntimeAssets) }
