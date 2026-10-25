@@ -301,6 +301,8 @@ fun PocketDevApp(viewModel: MainViewModel = viewModel()) {
             )
         state.startupStage == StartupStage.MODEL_SETUP -> ProviderSetupScreen(
             initial = state.provider,
+            chatGptAuth = state.chatGptAuth,
+            chatGptActions = viewModel.chatGptActions(),
             onboarding = true,
             agentKind = state.agentKind,
             initialStep = 1,
@@ -2090,6 +2092,7 @@ private fun RootScreenHost(
                 )
                 RootScreen.AGENT -> AgentScreen(
                     state = state,
+                    chatGptActions = viewModel.chatGptActions(),
                     onSaveProvider = { profile, key ->
                         viewModel.updateProvider(profile, key)
                     },
@@ -2256,6 +2259,8 @@ private fun ProviderSetupScreen(
     onSelectAgent: (AgentKind) -> Unit,
     onToggleTheme: (() -> Unit)? = null,
     themeMode: AppThemeMode = AppThemeMode.DARK,
+    chatGptAuth: com.jarves.mh.auth.ChatGptAuthState,
+    chatGptActions: ChatGptActions,
 ) {
     val context = LocalContext.current
     var step by rememberSaveable { mutableIntStateOf(initialStep) }
@@ -2333,7 +2338,19 @@ private fun ProviderSetupScreen(
                     onContinue = { step = 2 },
                     onChangeAgent = { showAgentPicker = true },
                 )
-                else -> ProviderCredentialsStep(
+                else -> if (selected == ProviderKind.CHATGPT) {
+                    Column(Modifier.verticalScroll(rememberScrollState())) {
+                        ChatGptConnectionCard(
+                            auth = chatGptAuth,
+                            model = model,
+                            onModel = { model = it },
+                            actions = chatGptActions,
+                            onValidate = { chosen -> onValidate(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "", emptyList()) },
+                            onSave = { chosen -> onSave(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "") },
+                        )
+                        Spacer(Modifier.height(24.dp))
+                    }
+                } else ProviderCredentialsStep(
                     provider = selected,
                     agentKind = agentKind,
                     baseUrl = baseUrl,
@@ -2569,6 +2586,7 @@ private fun ProviderChoiceRow(
     onClick: () -> Unit,
 ) {
     val accent = when (provider) {
+        ProviderKind.CHATGPT -> Color(0xFF10A37F)
         ProviderKind.CLAUDE -> Color(0xFFD97757)
         ProviderKind.ANTHROPIC -> Color(0xFFE7A26D)
         ProviderKind.LLM_ROUTER -> Color(0xFF5B8DEF)
@@ -2579,6 +2597,7 @@ private fun ProviderChoiceRow(
         ProviderKind.CUSTOM -> MaterialTheme.colorScheme.primary
     }
     val mark = when (provider) {
+        ProviderKind.CHATGPT -> "GPT"
         ProviderKind.CLAUDE -> "C"
         ProviderKind.ANTHROPIC -> "A"
         ProviderKind.LLM_ROUTER -> "OR"

@@ -155,6 +155,7 @@ internal fun formatAntigravityModelTier(id: String): String = when {
 @Composable
 fun AgentScreen(
     state: AppUiState,
+    chatGptActions: ChatGptActions,
     onSaveProvider: (ProviderProfile, String) -> Unit,
     onDiscoverModels: suspend (ProviderProfile, String) -> ModelDiscoveryResult,
     onValidateProvider: suspend (ProviderProfile, String, List<DiscoveredModel>) -> ConnectionValidation,
@@ -213,8 +214,7 @@ fun AgentScreen(
     val orderedAgents = remember(state.primaryAgentKind) {
         listOf(state.primaryAgentKind) + AgentKind.entries.filterNot { it == state.primaryAgentKind }
     }
-    val viewedAgentInstalled = viewedAgent == state.agentKind ||
-        state.installedAgentVersions.containsKey(viewedAgent)
+    val viewedAgentInstalled = state.installedAgentVersions.containsKey(viewedAgent)
 
     val providerSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
     val antigravitySheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
@@ -820,7 +820,7 @@ fun AgentScreen(
                         ) {
                             orderedAgents.forEach { agent ->
                                 val isSelected = viewedAgent == agent
-                                val isInstalled = agent == state.agentKind || state.installedAgentVersions.containsKey(agent)
+                                val isInstalled = state.installedAgentVersions.containsKey(agent)
                                 val updateAvailable = state.agentUpdates.containsKey(agent)
                                 val shortTitle = when (agent) {
                                     AgentKind.ANTIGRAVITY -> "Antigravity"
@@ -970,6 +970,17 @@ fun AgentScreen(
                 } else {
                     AgentProviderCard(
                         state = state,
+                        chatGptConnection = {
+                            ChatGptConnectionCard(
+                                auth = state.chatGptAuth,
+                                model = model,
+                                onModel = { model = it },
+                                actions = chatGptActions,
+                                onValidate = { chosen -> onValidateProvider(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "", emptyList()) },
+                                onSave = { chosen -> onSaveProvider(ProviderProfile(ProviderKind.CHATGPT, model = chosen), "") },
+                                enabled = !state.isRunning,
+                            )
+                        },
                         selectedKind = selectedKind,
                         baseUrl = baseUrl,
                         model = model,
@@ -1475,6 +1486,7 @@ private fun AgentAntigravityCard(
 @Composable
 private fun AgentProviderCard(
     state: AppUiState,
+    chatGptConnection: @Composable () -> Unit,
     selectedKind: ProviderKind,
     baseUrl: String,
     model: String,
@@ -1575,6 +1587,12 @@ private fun AgentProviderCard(
                     }
 
                 }
+            }
+
+            if (selectedKind == ProviderKind.CHATGPT) {
+                Spacer(Modifier.height(12.dp))
+                chatGptConnection()
+                return@Column
             }
 
             if (selectedKind != ProviderKind.CLAUDE) {

@@ -1,3 +1,35 @@
+# Mobile Harness Fork: ChatGPT plan support
+
+Community fork of [techjarves/Mobile-Harness](https://github.com/techjarves/Mobile-Harness). The `feat/chatgpt-sign-in` branch adds native [Sign in with ChatGPT](https://developers.openai.com/siwc/token-sharing-open-source/sign-in) for the Claude Code agent. This is an independent community integration.
+
+## Connect ChatGPT
+
+1. Install the fork APK and choose **Claude Code** during setup.
+2. Choose **ChatGPT**, tap **Continue with ChatGPT**, and authorize in your browser, including plan access.
+3. Return, select a model from your account's available models, and tap **Test connection and save**. The test uses a small amount of plan allowance.
+4. The Agent screen shows **Using ChatGPT plan** and **Manage ChatGPT usage**. You can reconnect, add/select another account, or disconnect there.
+
+No OpenAI API key is needed for this provider. Availability and limits depend on the account; an identity-only login cannot run inference. Account-scoped models come from `/v1/models`; no assumed model aliases are sent. Exhausted/unavailable allowance or incomplete responses fail explicitly.
+
+The native Android client owns OAuth (PKCE, state, nonce, verified ID tokens, refresh, encrypted no-backup storage). The CLI receives a random per-run loopback credential, never OAuth tokens. A dedicated gateway translates text, function calls, results, and encrypted reasoning context into stateless streaming Responses requests with `store: false`. This first version buffers each upstream response until `response.completed`, then delivers it to Claude Code; token-by-token display is not yet available. Unsupported content fails explicitly. This integration remains experimental.
+
+Version `1.0.4-chatgpt.4` was tested on a Samsung Galaxy S21 Ultra (Android 15) on October 9, 2026: browser authorization, account model discovery, connection test, recovery of an incomplete Claude Code installation, and a complete Bash → Read → final-answer cycle using `gpt-6.1-sol`. The task created a file containing `CHATGPT_TOOL_TEST_OK`; its exact contents were independently checked on the device. All 103 unit tests passed. This verifies the basic text/tool workflow, not every model, account lifecycle, or tool content type.
+
+The fork installs as **Mobile Harness Fork** (`com.dnalchemist.mobileharness`) alongside upstream, with its own runtime and data. Upstream automatic APK updates are disabled because signing identities differ. Runtime bundles still come from upstream. Download links in the original documentation below are **upstream APKs without this feature**.
+
+Build with JDK17, Android SDK36, NDK26.1.10909125 and CMake3.22.1:
+
+```sh
+git submodule update --init --recursive
+./gradlew :app:testOnlineDebugUnitTest :app:assembleOnlineDebug
+```
+
+APK: `app/build/outputs/apk/online/debug/app-online-debug.apk`. Do not commit credentials, signing keys, SDK files, runtime bundles or build products. Signed releases use the existing `MH_UPLOAD_*` environment variables; `-PappUpdateManifestUrl=https://...` can configure a fork-owned update manifest.
+
+---
+
+## Original project documentation
+
 <div align="center">
 
   <img src="assets/readme/logo.svg" alt="Mobile Harness Logo" width="104" height="104" style="border-radius: 24px;" />

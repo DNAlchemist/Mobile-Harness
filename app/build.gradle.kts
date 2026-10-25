@@ -14,7 +14,7 @@ val testSecrets = Properties().apply {
 val playBuild = providers.gradleProperty("playBuild").orNull?.toBoolean() == true ||
     providers.gradleProperty("playFeasibility").orNull?.toBoolean() == true
 val privacyPolicyUrl = providers.gradleProperty("privacyPolicyUrl").orNull
-    ?: "https://github.com/techjarves/Mobile-Harness/blob/main/PRIVACY.md"
+    ?: "https://github.com/DNAlchemist/Mobile-Harness/blob/main/PRIVACY.md"
 val uploadStorePath = providers.environmentVariable("MH_UPLOAD_STORE_FILE").orNull
 val uploadStorePassword = providers.environmentVariable("MH_UPLOAD_STORE_PASSWORD").orNull
 val uploadKeyAlias = providers.environmentVariable("MH_UPLOAD_KEY_ALIAS").orNull
@@ -27,8 +27,8 @@ val hasUploadSigning = listOf(
 ).all { !it.isNullOrBlank() }
 val runtimeReleaseBaseUrl =
     "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4"
-val appUpdateManifestUrl =
-    "https://github.com/techjarves/Mobile-Harness/releases/latest/download/mobile-harness-update.json"
+// Fork builds use a separate signing identity and must not offer upstream APKs.
+val appUpdateManifestUrl = providers.gradleProperty("appUpdateManifestUrl").orNull ?: ""
 val runtimeBundleDir = rootProject.layout.projectDirectory.dir("dist/runtime-bundles")
 val generatedRuntimeAssets = layout.buildDirectory.dir("generated/runtime-assets")
 
@@ -77,8 +77,8 @@ android {
         targetSdk = if (playBuild) 36 else 28
         // Keep literal defaults so F-Droid's static manifest parser can detect
         // the tagged release. Gradle properties may still override Play builds.
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 8
+        versionName = "1.0.4-chatgpt.4"
         providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()?.let { versionCode = it }
         providers.gradleProperty("appVersionName").orNull?.let { versionName = it }
 
@@ -220,6 +220,7 @@ dependencies {
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
     implementation("org.apache.commons:commons-compress:1.27.1")
     implementation("com.github.luben:zstd-jni:1.5.6-9@aar")
+    implementation("com.nimbusds:nimbus-jose-jwt:10.10")
 
     testImplementation("junit:junit:4.13.2")
     testImplementation("org.json:json:20250107")
