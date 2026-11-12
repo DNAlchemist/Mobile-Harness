@@ -7,6 +7,24 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+// Play invokes Gradle directly, so toolchain discovery belongs here too.
+// Explicit settings win; desktop/CI retain the pinned F-Droid NDK default.
+val explicitNdkPath = providers.gradleProperty("mhNdkPath").orNull
+    ?: providers.environmentVariable("MH_NDK_PATH").orNull
+val phoneNdk = rootProject.file("/opt/native-tools/android-ndk-r29")
+val selectedNdk = explicitNdkPath?.let { rootProject.file(it) }
+    ?: phoneNdk.takeIf {
+        System.getProperty("os.arch") in listOf("aarch64", "arm64") &&
+            it.resolve("source.properties").isFile
+    }
+val selectedNdkRevision = selectedNdk?.let { ndk ->
+    val metadata = ndk.resolve("source.properties")
+    check(metadata.isFile) { "Incomplete NDK: $metadata is missing" }
+    Properties().apply { metadata.inputStream().use(::load) }
+        .getProperty("Pkg.Revision")?.trim()
+        ?: error("NDK revision missing in $metadata")
+}
+
 val testSecrets = Properties().apply {
     val secretsFile = rootProject.file("test-secrets.properties")
     if (secretsFile.isFile) secretsFile.inputStream().use(::load)
@@ -54,11 +72,21 @@ fun buildConfigString(value: String): String =
 android {
     namespace = "com.jarves.mh"
     compileSdk = 36
-    // F-Droid's r26b recipe installs 26.1.10909125. Keep AGP from selecting
-    // its newer default NDK; local developers may override this explicitly.
-    ndkVersion = providers.gradleProperty("mhNdkVersion").orNull ?: "26.1.10909125"
+    ndkVersion = providers.gradleProperty("mhNdkVersion").orNull
+        ?: selectedNdkRevision ?: "26.1.10909125"
+    selectedNdk?.let { ndkPath = it.absolutePath }
 
     signingConfigs {
+        // Local update key is ignored by Git; never commit it.
+        val localDebugKey = rootProject.file("jvm-run-debug.keystore")
+        if (localDebugKey.isFile) {
+            getByName("debug") {
+                storeFile = localDebugKey
+                storePassword = "android"
+                keyAlias = "androiddebugkey"
+                keyPassword = "android"
+            }
+        }
         if (hasUploadSigning) {
             create("upload") {
                 storeFile = rootProject.file(checkNotNull(uploadStorePath))
@@ -77,8 +105,8 @@ android {
         targetSdk = if (playBuild) 36 else 28
         // Keep literal defaults so F-Droid's static manifest parser can detect
         // the tagged release. Gradle properties may still override Play builds.
-        versionCode = 8
-        versionName = "1.0.4-chatgpt.4"
+        versionCode = 9
+        versionName = "1.0.4-chatgpt.5"
         providers.gradleProperty("appVersionCode").orNull?.toIntOrNull()?.let { versionCode = it }
         providers.gradleProperty("appVersionName").orNull?.let { versionName = it }
 
@@ -170,7 +198,7 @@ kotlin {
 val prepareHarnessDebugApk = tasks.register<Sync>("prepareHarnessDebugApk") {
     dependsOn("assembleOnlineDebug")
     from(layout.buildDirectory.dir("outputs/apk/online/debug")) {
-        include("*.apk")
+        include("app-online-debug.apk")
         rename { "app-debug.apk" }
     }
     into(layout.buildDirectory.dir("outputs/apk/debug"))

@@ -1,0 +1,63 @@
+name: Build Online Debug APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - 'app/**'
+      - 'third_party/**'
+      - '*.gradle.kts'
+      - 'gradle/**'
+      - 'gradle.properties'
+      - 'dist/runtime-bundles/manifest.json'
+      - '.github/workflows/build-apk.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14.3'
+      - name: Install Android native toolchain
+        run: sdkmanager 'platforms;android-36' 'build-tools;35.0.0' 'ndk;26.1.10909125' 'cmake;3.22.1'
+      - name: Download and verify bundled agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          manifest=dist/runtime-bundles/manifest.json
+          file=$(jq -r '.bundles.agy.file' "$manifest")
+          sha=$(jq -r '.bundles.agy.sha256' "$manifest")
+          curl --fail --location --retry 3 \
+            "https://github.com/techjarves/Mobile-Harness/releases/download/runtime-2026.09.4/$file" \
+            --output "dist/runtime-bundles/$file"
+          printf '%s  %s\n' "$sha" "dist/runtime-bundles/$file" | sha256sum --check
+      - name: Test and build
+        run: gradle :app:testOnlineDebugUnitTest :app:assembleOnlineDebug --no-daemon --max-workers=2 --stacktrace
+      - name: Upload installable APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: mobile-harness-online-debug
+          path: app/build/outputs/apk/online/debug/app-online-debug.apk
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unit-test-reports
+          path: app/build/reports/tests/
+          if-no-files-found: ignore
