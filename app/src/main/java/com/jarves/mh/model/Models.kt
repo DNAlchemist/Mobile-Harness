@@ -322,7 +322,11 @@ sealed interface RuntimeEvent {
     }
     data class PreviewStarted(override val sessionId: String, val url: String) : RuntimeEvent
     data class SessionCompleted(override val sessionId: String) : RuntimeEvent
-    data class SessionFailed(override val sessionId: String, val reason: String) : RuntimeEvent
+    data class SessionFailed(
+        override val sessionId: String,
+        val reason: String,
+        val mayRetryWithApiKey: Boolean = true,
+    ) : RuntimeEvent
 }
 
 data class ChatMessage(

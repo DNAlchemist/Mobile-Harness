@@ -3526,7 +3526,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val current = _state.value
         if (current.agentKind == AgentKind.ANTIGRAVITY) return false
         if (!current.isRunning || current.activeSessionId != event.sessionId) return false
-        if (!isApiKeyFailure(event.reason)) return false
+        if (!event.mayRetryWithApiKey || !isApiKeyFailure(event.reason)) return false
         val request = activeRuntimeRequest ?: return false
         val credentials = vault.credentials(request.provider.kind.name)
         val active = credentials.firstOrNull { it.isActive } ?: return false
