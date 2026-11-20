@@ -32,19 +32,19 @@ import org.json.JSONObject
 import org.json.JSONArray
 
 internal object ProviderRuntimeErrorDetector {
+    private val plainDiagnostic = Regex(
+        """^(?:API Error:|Failed to authenticate\b|Authentication failed\b|Invalid API key\b|HTTP (?:401|403|429)\b)""",
+        RegexOption.IGNORE_CASE,
+    )
+
     fun detect(line: String): String? {
         val json = runCatching { JSONObject(line) }.getOrNull()
-        val combined = buildString {
-            append(line)
-            json?.let {
-                append(' ')
-                append(it.optString("error"))
-                append(' ')
-                append(it.optString("message"))
-                append(' ')
-                append(it.optString("result"))
-            }
-        }.lowercase()
+        val diagnostic = if (json == null) {
+            line.trimStart().takeIf { plainDiagnostic.containsMatchIn(it) }
+        } else {
+            errorDiagnostic(json)
+        }
+        val combined = diagnostic?.lowercase() ?: return null
         return when {
             "user not found" in combined -> "User not found. Check the API key and provider account."
             "authentication_failed" in combined ||
@@ -55,11 +55,23 @@ internal object ProviderRuntimeErrorDetector {
                 "http 429" in combined ||
                 "expired" in combined ||
                 "quota" in combined ||
-                "rate limit" in combined ||
-                (json?.optString("subtype") == "api_retry" && json.optInt("error_status") in listOf(401, 403, 429)) ->
+                "rate limit" in combined ->
                 "The provider rejected the saved API key."
             else -> null
         }
+    }
+
+    private fun errorDiagnostic(event: JSONObject): String? = when (event.optString("type")) {
+        "system" -> if (event.optString("subtype") == "api_retry") {
+            "HTTP ${event.optInt("error_status")} ${event.optString("error")} ${event.optString("message")}"
+        } else null
+        "assistant" -> event.optString("error")
+        "error" -> "${event.optString("error")} ${event.optString("message")}"
+        "stream_event" -> event.optJSONObject("event")
+            ?.takeIf { it.optString("type") == "error" }
+            ?.let(::errorDiagnostic)
+        "result" -> if (event.optBoolean("is_error")) event.optString("result") else null
+        else -> null
     }
 }
 
