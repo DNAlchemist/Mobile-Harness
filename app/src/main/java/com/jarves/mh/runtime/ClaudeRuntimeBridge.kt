@@ -32,46 +32,76 @@ import org.json.JSONObject
 import org.json.JSONArray
 
 internal object ProviderRuntimeErrorDetector {
-    private val plainDiagnostic = Regex(
-        """^(?:API Error:|Failed to authenticate\b|Authentication failed\b|Invalid API key\b|HTTP (?:401|403|429)\b)""",
+    private val statusPrefix = Regex(
+        """^(?:Failed to authenticate[.:]?\s+)?(?:API Error:\s*(?:HTTP\s+)?|HTTP\s+)(\d{3})\b""",
+        RegexOption.IGNORE_CASE,
+    )
+    private val authPrefix = Regex(
+        """^(?:Failed to authenticate|Authentication failed|Invalid API key)\b""",
         RegexOption.IGNORE_CASE,
     )
 
-    fun detect(line: String): String? {
-        val json = runCatching { JSONObject(line) }.getOrNull()
-        val diagnostic = if (json == null) {
-            line.trimStart().takeIf { plainDiagnostic.containsMatchIn(it) }
-        } else {
-            errorDiagnostic(json)
-        }
-        val combined = diagnostic?.lowercase() ?: return null
-        return when {
-            "user not found" in combined -> "User not found. Check the API key and provider account."
-            "authentication_failed" in combined ||
-                "authentication failed" in combined ||
-                "invalid api key" in combined ||
-                "http 401" in combined ||
-                "http 403" in combined ||
-                "http 429" in combined ||
-                "expired" in combined ||
-                "quota" in combined ||
-                "rate limit" in combined ->
-                "The provider rejected the saved API key."
+    fun detect(line: String, chatGpt: Boolean = false): String? {
+        val event = runCatching { JSONObject(line) }.getOrNull()
+        val status = if (event == null) cliStatus(line) else eventStatus(event)
+        return when (status) {
+            401 -> when {
+                chatGpt -> "Claude Code reported an authentication failure on the ChatGPT connection."
+                line.contains("user not found", ignoreCase = true) -> "User not found. Check the API key and provider account."
+                else -> "The provider rejected the saved API key."
+            }
+            403 -> "The provider denied access (HTTP 403)."
+            429 -> "The provider reported a rate or usage limit (HTTP 429)."
             else -> null
         }
     }
 
-    private fun errorDiagnostic(event: JSONObject): String? = when (event.optString("type")) {
-        "system" -> if (event.optString("subtype") == "api_retry") {
-            "HTTP ${event.optInt("error_status")} ${event.optString("error")} ${event.optString("message")}"
-        } else null
-        "assistant" -> event.optString("error")
-        "error" -> "${event.optString("error")} ${event.optString("message")}"
-        "stream_event" -> event.optJSONObject("event")
-            ?.takeIf { it.optString("type") == "error" }
-            ?.let(::errorDiagnostic)
-        "result" -> if (event.optBoolean("is_error")) event.optString("result") else null
+    private fun cliStatus(message: String): Int? {
+        val text = message.trimStart()
+        return statusPrefix.find(text)?.groupValues?.get(1)?.toInt()
+            ?: if (authPrefix.containsMatchIn(text)) 401 else null
+    }
+
+    private fun eventStatus(event: JSONObject): Int? = when (event.optString("type")) {
+        "stream_event" -> event.optJSONObject("event")?.takeIf { it.optString("type") == "error" }?.let(::eventStatus)
+        "system" -> if (event.optString("subtype") == "api_retry") providerStatus(event) else null
+        "error" -> providerStatus(event)
+        "assistant" -> if (event.isNull("error")) null else providerStatus(event)
+        "result" -> if (event.optBoolean("is_error")) providerStatus(event) else null
         else -> null
+    }
+
+    private fun providerStatus(event: JSONObject): Int? {
+        val error = event.optJSONObject("error")
+        val status = event.optInt("error_status", event.optInt("status", error?.optInt("status") ?: 0))
+        if (status != 0) return status
+        val codes = listOf(error?.optString("type"), error?.optString("code"), event.opt("error") as? String)
+        return when {
+            codes.any { it in setOf("authentication_failed", "authentication_error", "invalid_api_key") } -> 401
+            "permission_error" in codes -> 403
+            codes.any { it == "rate_limit" || it == "rate_limit_error" } -> 429
+            else -> null
+        }
+    }
+
+    fun failureDetail(error: Throwable): String = when (val message = error.message.orEmpty()) {
+        "" -> "The real Claude Code runtime could not start."
+        "Downloaded file checksum did not match" -> "Runtime verification failed. Nothing unverified was executed."
+        else -> message
+    }
+
+    fun failureDetail(event: JSONObject): String {
+        val messages = event.optJSONArray("errors")
+        return event.optString("result").ifBlank {
+            event.optJSONObject("error")?.optString("message").orEmpty()
+        }.ifBlank {
+            (event.opt("error") as? String).orEmpty()
+        }.ifBlank {
+            event.optString("message")
+        }.ifBlank {
+            (0 until (messages?.length() ?: 0)).mapNotNull { messages?.opt(it) as? String }
+                .filter(String::isNotBlank).joinToString("\n")
+        }.ifBlank { "Claude Code reported an error" }
     }
 }
 
@@ -237,12 +267,12 @@ class ClaudeRuntimeBridge(
                                     process.destroyForcibly()
                                     throw ProviderSessionException(reason)
                                 }
-                                ProviderRuntimeErrorDetector.detect(line)?.let { reason ->
+                                ProviderRuntimeErrorDetector.detect(line, chatGpt)?.let { reason ->
                                     process.destroyForcibly()
                                     throw ProviderSessionException(chatGptGateway?.failureMessage ?: reason)
                                 }
-                                if (!consumeClaudeEvent(sessionId, line)) {
-                                    lastDiagnostic = line.takeLast(500)
+                                consumeClaudeEvent(sessionId, line)?.let { diagnostic ->
+                                    lastDiagnostic = diagnostic.takeLast(500)
                                     terminalStatus(line)?.let { (title, detail) ->
                                         eventBus.emit(RuntimeEvent.RuntimeLog(sessionId, title, detail))
                                     }
@@ -254,7 +284,7 @@ class ClaudeRuntimeBridge(
                 }
                 pendingOutput.toString().trim().takeIf(String::isNotBlank)?.let { line ->
                     Log.d("ClaudeBridge", "TRAILING OUTPUT: $line")
-                    if (!consumeClaudeEvent(sessionId, line)) lastDiagnostic = line.takeLast(500)
+                    consumeClaudeEvent(sessionId, line)?.let { lastDiagnostic = it.takeLast(500) }
                 }
                 val exit = process.waitFor()
                 Log.d("ClaudeBridge", "Process exited with code $exit")
@@ -284,13 +314,16 @@ class ClaudeRuntimeBridge(
                     )
                 } else {
                     if (userStopRequested) throw ProviderSessionException("Stopped by user")
-                    error(lastDiagnostic.ifBlank { "Claude Code stopped with exit code $exit" })
+                    error("Claude Code stopped with exit code $exit" + if (lastDiagnostic.isBlank()) "" else ": $lastDiagnostic")
                 }
             }
         }.onFailure { error ->
             Log.e("ClaudeBridge", "Session failed", error)
-            val message = friendlyError(error)
-            emitFailureOnce(sessionId, message)
+            val message = sanitizeForDisplay(ProviderRuntimeErrorDetector.failureDetail(error)).take(500)
+            emitFailureOnce(
+                sessionId, message,
+                mayRetryWithApiKey = !chatGpt && error is ProviderSessionException && !userStopRequested,
+            )
             if (userStopRequested) {
                 cancelForegroundRuntime()
             } else {
@@ -433,10 +466,15 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private suspend fun consumeClaudeEvent(sessionId: String, line: String): Boolean {
-        val json = runCatching { JSONObject(line) }.getOrNull() ?: return false
+    private suspend fun consumeClaudeEvent(sessionId: String, line: String): String? {
+        val json = runCatching { JSONObject(line) }.getOrNull() ?: return line
+        val event = if (json.optString("type") == "stream_event") json.optJSONObject("event") else json
+        if (event?.optString("type") == "error") {
+            // The CLI can retry a stream error. Keep its detail in case the process later exits unsuccessfully.
+            return ProviderRuntimeErrorDetector.failureDetail(event)
+        }
         consumeClaudeJsonEvent(sessionId, json)
-        return true
+        return null
     }
 
     private suspend fun consumeClaudeJsonEvent(sessionId: String, json: JSONObject) {
@@ -537,10 +575,7 @@ class ClaudeRuntimeBridge(
                 }
             }
             "result" -> {
-                if (json.optBoolean("is_error")) {
-                    val message = json.optString("result").ifBlank { "Claude Code reported an error" }
-                    throw IllegalStateException(message)
-                }
+                if (json.optBoolean("is_error")) error(ProviderRuntimeErrorDetector.failureDetail(json))
                 // The structured result is Claude Code's authoritative terminal event.
                 // Update the UI immediately instead of waiting for a PRoot/Node wrapper
                 // that may remain alive after the answer has already completed.
@@ -621,9 +656,9 @@ class ClaudeRuntimeBridge(
         }
     }
 
-    private suspend fun emitFailureOnce(sessionId: String, reason: String) {
+    private suspend fun emitFailureOnce(sessionId: String, reason: String, mayRetryWithApiKey: Boolean = false) {
         if (finishedSessions.add(sessionId)) {
-            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, reason))
+            eventBus.emit(RuntimeEvent.SessionFailed(sessionId, reason, mayRetryWithApiKey))
             if (userStopRequested) {
                 cancelForegroundRuntime()
             } else {
@@ -959,18 +994,6 @@ class ClaudeRuntimeBridge(
             listOf("rm -rf", "git push", "git reset", "sudo", "curl ").any(preview::contains) -> RiskLevel.HIGH
             tool in listOf("Write", "Edit", "NotebookEdit", "Bash") -> RiskLevel.REVIEW
             else -> RiskLevel.SAFE
-        }
-    }
-
-    private fun friendlyError(error: Throwable): String {
-        val message = error.message.orEmpty()
-        return when {
-            error is ProviderSessionException -> message
-            message.contains("user not found", true) -> "User not found. Check the API key and provider account."
-            message.contains("checksum", true) -> "Runtime verification failed. Nothing unverified was executed."
-            message.contains("HTTP 401", true) || message.contains("authentication", true) -> "The provider rejected the saved API key."
-            message.isBlank() -> "The real Claude Code runtime could not start."
-            else -> message.take(500)
         }
     }
 
